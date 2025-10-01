@@ -12,15 +12,15 @@ def load_df(file):
         return pd.read_csv(file)
     return pd.read_excel(file)
 
-# ---------- Paramètres ----------
+# ---------- Paramètres (barre latérale) ----------
 st.sidebar.header("Paramètres planning")
 start_date = st.sidebar.date_input("📅 Date de début", value=dt.date.today())
 weeks_to_show = st.sidebar.number_input("Nombre de semaines à afficher", 1, 26, 8, 1)
 
 reserve_h = st.sidebar.number_input("Réserve dépannage (h/j ouvré)", 0.0, 6.0, 1.5, 0.5)
-lunch_h   = st.sidebar.number_input("Pause déjeuner (h)", 0.0, 3.0, 1.0, 0.25)  # ✅ NOUVEAU
+lunch_h   = st.sidebar.number_input("Pause déjeuner (h)", 0.0, 3.0, 1.0, 0.25)  # ← pause à midi incluse
 
-st.sidebar.caption("Rythme hebdo (heures) :")
+st.sidebar.caption("Rythme hebdo (heures sur place, avant réserve & pause) :")
 h_mon = st.sidebar.number_input("Lundi", 0.0, 12.0, 8.0, 0.5)
 h_tue = st.sidebar.number_input("Mardi", 0.0, 12.0, 8.0, 0.5)
 h_wed = st.sidebar.number_input("Mercredi", 0.0, 12.0, 8.0, 0.5)
@@ -54,7 +54,7 @@ def cap_for_day(d: dt.date) -> float:
     raw = float(day_pattern.get(wd, 0.0))
     if raw <= 0 or d in off_days:
         return 0.0
-    cap = raw - reserve_h - lunch_h          # ✅ PAUSE INTÉGRÉE ICI
+    cap = raw - reserve_h - lunch_h
     return max(0.0, cap)
 
 WEEKDAYS_FR = ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"]
@@ -71,22 +71,31 @@ if uploaded_file:
     st.caption("Aperçu brut :")
     st.dataframe(df.head(20), use_container_width=True)
 
-    # Sélecteurs colonnes (empêche la même colonne 2x)
+    # --- Colonnes à utiliser (auto-détection + anti-doublon) ---
+    def norm(s: str) -> str:
+        return s.strip().lower().replace("’","'")
+
+    # site par défaut
+    site_default = None
+    for c in df.columns:
+        if norm(c) in ["description site", "site", "nom du site"]:
+            site_default = c; break
+
     st.subheader("Colonnes à utiliser")
-    col_site = st.selectbox("Colonne du site", options=list(df.columns))
+    col_site = st.selectbox("Colonne du site",
+                            options=list(df.columns),
+                            index=list(df.columns).index(site_default) if site_default in df.columns else 0)
+
+    # équipements par défaut (exclut col_site)
     options_equip = [c for c in df.columns if c != col_site]
-
-    # suggestion auto si 'équip' détecté
-    sugg_equip = None
+    equip_default = None
     for c in options_equip:
-        if "equip" in c.lower() or "équip" in c.lower():
-            sugg_equip = c; break
+        if any(k in norm(c) for k in ["nombre d'equipements","nombre d'équipements","nb equip","équipements","equipements"]):
+            equip_default = c; break
 
-    col_equip = st.selectbox(
-        "Colonne du nombre d'équipements",
-        options=options_equip,
-        index=options_equip.index(sugg_equip) if (sugg_equip and sugg_equip in options_equip) else 0
-    )
+    col_equip = st.selectbox("Colonne du nombre d'équipements",
+                             options=options_equip,
+                             index=options_equip.index(equip_default) if equip_default in options_equip else 0)
 
     # Nettoyage / agrégation
     df[col_equip] = pd.to_numeric(df[col_equip], errors="coerce").fillna(0)
@@ -100,11 +109,11 @@ if uploaded_file:
     # Durée par site (h) : 15 min/équip + 10 min fixes
     sites["Durée (h)"] = sites["Total équipements"] * (15/60) + (10/60)
 
-    # Info rapide
+    # Infos rapides
     c1,c2,c3 = st.columns(3)
     c1.metric("Nombre de sites", f"{len(sites)}")
     c2.metric("Total équipements", f"{int(sites['Total équipements'].sum())}")
-    c3.metric("Capacité/jour (Lun)", f"{max(0.0, h_mon - reserve_h - lunch_h):.1f} h")  # exemple
+    c3.metric("Capacité Lundi (net)", f"{max(0.0, h_mon - reserve_h - lunch_h):.1f} h")
 
     # File de travail (on commence par les plus chronophages)
     queue = (sites.sort_values("Durée (h)", ascending=False)
