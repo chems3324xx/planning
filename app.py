@@ -16,7 +16,9 @@ def load_df(file):
 st.sidebar.header("Paramètres planning")
 start_date = st.sidebar.date_input("📅 Date de début", value=dt.date.today())
 weeks_to_show = st.sidebar.number_input("Nombre de semaines à afficher", 1, 26, 8, 1)
+
 reserve_h = st.sidebar.number_input("Réserve dépannage (h/j ouvré)", 0.0, 6.0, 1.5, 0.5)
+lunch_h   = st.sidebar.number_input("Pause déjeuner (h)", 0.0, 3.0, 1.0, 0.25)  # ✅ NOUVEAU
 
 st.sidebar.caption("Rythme hebdo (heures) :")
 h_mon = st.sidebar.number_input("Lundi", 0.0, 12.0, 8.0, 0.5)
@@ -45,15 +47,15 @@ def parse_off_days(text):
 off_days = parse_off_days(off_text)
 
 def cap_for_day(d: dt.date) -> float:
+    """Capacité nette du jour (heures) : heures prévues − réserve − pause déjeuner."""
     wd = d.weekday()
     if wd > 4:  # samedi/dimanche
         return 0.0
-    raw = day_pattern.get(wd, 0.0)
-    if raw <= 0:
+    raw = float(day_pattern.get(wd, 0.0))
+    if raw <= 0 or d in off_days:
         return 0.0
-    if d in off_days:
-        return 0.0
-    return max(0.0, raw - reserve_h)
+    cap = raw - reserve_h - lunch_h          # ✅ PAUSE INTÉGRÉE ICI
+    return max(0.0, cap)
 
 WEEKDAYS_FR = ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"]
 
@@ -83,7 +85,7 @@ if uploaded_file:
     col_equip = st.selectbox(
         "Colonne du nombre d'équipements",
         options=options_equip,
-        index=options_equip.index(sugg_equip) if sugg_equip in options_equip else 0
+        index=options_equip.index(sugg_equip) if (sugg_equip and sugg_equip in options_equip) else 0
     )
 
     # Nettoyage / agrégation
@@ -97,10 +99,12 @@ if uploaded_file:
 
     # Durée par site (h) : 15 min/équip + 10 min fixes
     sites["Durée (h)"] = sites["Total équipements"] * (15/60) + (10/60)
+
     # Info rapide
-    c1,c2 = st.columns(2)
+    c1,c2,c3 = st.columns(3)
     c1.metric("Nombre de sites", f"{len(sites)}")
     c2.metric("Total équipements", f"{int(sites['Total équipements'].sum())}")
+    c3.metric("Capacité/jour (Lun)", f"{max(0.0, h_mon - reserve_h - lunch_h):.1f} h")  # exemple
 
     # File de travail (on commence par les plus chronophages)
     queue = (sites.sort_values("Durée (h)", ascending=False)
@@ -108,12 +112,8 @@ if uploaded_file:
                   .to_dict(orient="records"))
 
     # Génération du calendrier (Lun→Ven, nb semaines choisi)
-    start = start_date
-    # aligne sur un lundi visuel (optionnel)
-    # while start.weekday() != 0: start -= dt.timedelta(days=1)
-
     days = []
-    d = start
+    d = start_date
     for _ in range(weeks_to_show * 7):
         days.append(d)
         d += dt.timedelta(days=1)
@@ -123,7 +123,7 @@ if uploaded_file:
 
     for d in days:
         if d.weekday() > 4:
-            continue  # we ignore weekends in visual plan
+            continue  # on ignore week-ends
         cap = cap_for_day(d)
         if d in off_days:
             allocations.append({
@@ -169,11 +169,9 @@ if uploaded_file:
     plan_df = pd.DataFrame(allocations)
 
     st.subheader("Planning visuel (semaine par semaine)")
-    # construire un tableau par semaine (lundi→vendredi)
     if plan_df.empty:
         st.info("Aucune allocation sur la période affichée.")
     else:
-        # grouper par semaine ISO
         plan_df["Date_dt"] = pd.to_datetime(plan_df["Date"], format="%d/%m/%Y")
         plan_df["Semaine"] = plan_df["Date_dt"].dt.isocalendar().week
         plan_df["Année"] = plan_df["Date_dt"].dt.isocalendar().year
@@ -182,14 +180,12 @@ if uploaded_file:
 
         for (year, week) in weeks:
             st.markdown(f"### Semaine {int(week)} — {int(year)}")
-            # construit une grille L→V
             grid = {d: [] for d in ["Lundi","Mardi","Mercredi","Jeudi","Vendredi"]}
             sub = plan_df[(plan_df["Année"]==year) & (plan_df["Semaine"]==week)]
             for _, r in sub.iterrows():
                 if r["Jour"] in grid:
                     label = f'{r["Date"]} — {r["Site"]} ({r["Heures"]}h)'
                     grid[r["Jour"]].append(label)
-            # afficher en colonnes
             cols = st.columns(5)
             for i, dayname in enumerate(["Lundi","Mardi","Mercredi","Jeudi","Vendredi"]):
                 with cols[i]:
